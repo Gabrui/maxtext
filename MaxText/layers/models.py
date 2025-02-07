@@ -372,9 +372,12 @@ class Decoder(nn.Module):
   ):
     cfg = self.config
     mesh = self.mesh
-    assert decoder_input_tokens.ndim == 2  # [batch, len]
+    if cfg.multi_tokenizer:
+      assert decoder_input_tokens.ndim == 3  # [batch, len, dims]
+    else:
+      assert decoder_input_tokens.ndim == 2  # [batch, len]
 
-    # [batch, length] -> [batch, length, emb_dim]
+    # [batch, length, Optional[dims]] -> [batch, length, emb_dim]
     y = self.shared_embedding(decoder_input_tokens.astype("int32"))
     y = nn.Dropout(rate=cfg.dropout_rate, broadcast_dims=(-2,))(y, deterministic=deterministic)
     y = y.astype(cfg.dtype)
@@ -442,7 +445,7 @@ class Decoder(nn.Module):
         logits = jnp.tanh(logits) * cfg.final_logits_soft_cap
     else:
       logits = linears.DenseGeneral(
-          cfg.vocab_size,
+          cfg.vocab_size + (sum(cfg.multi_dims) if cfg.multi_tokenizer else 0),
           weight_dtype=cfg.weight_dtype,
           dtype=jnp.float32 if cfg.logits_dot_in_fp32 else cfg.dtype,  # for logit training stability
           kernel_axes=("embed", "vocab"),
@@ -475,6 +478,9 @@ class Transformer(nn.Module):
     mesh = self.mesh
     self.shared_embedding = Embed(
         num_embeddings=cfg.vocab_size,
+        multi_tokenizer=cfg.multi_tokenizer,
+        multi_languages=cfg.multi_languages,
+        multi_dims=cfg.multi_dims,
         features=cfg.emb_dim,
         dtype=cfg.dtype,
         attend_dtype=jnp.float32 if cfg.logits_dot_in_fp32 else cfg.dtype,  # for logit training stability

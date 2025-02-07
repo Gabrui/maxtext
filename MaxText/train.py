@@ -26,6 +26,7 @@ import sys
 import functools
 import time
 import queue
+import heapq
 
 from typing import Sequence, Optional
 from absl import app
@@ -75,6 +76,23 @@ from ml_goodput_measurement import monitoring
 Transformer = models.Transformer
 EPS = 1e-8
 _DEFAULT_OCDBT_TARGET_DATA_FILE_SIZE = 2 * 1024**3
+
+
+def interlaced_sampling(languages, frequencies):
+    max_heap = [(-freq, elem) for elem, freq in zip(languages, frequencies)]
+    heapq.heapify(max_heap)
+    result = []
+    while max_heap:
+        temp = []
+        for _ in range(len(max_heap)):  # Try to interleave all elements
+            if max_heap:
+                freq, elem = heapq.heappop(max_heap)
+                result.append(elem)
+                if freq + 1 < 0:  # Decrease count, reinsert if more remain
+                    temp.append((freq + 1, elem))
+        for item in temp:
+            heapq.heappush(max_heap, item)
+    return result
 
 
 def validate_train_config(config):
@@ -431,8 +449,16 @@ def loss_fn(model, config, data, dropout_rng, params, is_train=True):
       rngs={"dropout": rng1, "params": aqt_rng},
       mutable="intermediates",
   )
-  one_hot_targets = jax.nn.one_hot(data["targets"], config.vocab_size)
-  xent, _ = max_utils.cross_entropy_with_logits(logits, one_hot_targets, 0.0)
+  if config.multi_tokenizer:
+    one_hot_targets = [jax.nn.one_hot(data["targets"][..., i], sz)
+                       for i, sz in enumerate([config.vocab_size]+config.multi_dims)]
+    slices = np.cumsum([0, config.vocab_size] + config.multi_dims)
+    slices = [slice(a, b) for a, b in zip(slices[:-1], slices[1:])]
+    xent = functools.reduce(jnp.add, [max_utils.cross_entropy_with_logits(logits[..., slice], one_hot_targets[i], 0.0)[0]
+                  for i, slice in enumerate(slices)])
+  else:
+    one_hot_targets = jax.nn.one_hot(data["targets"], config.vocab_size)
+    xent, _ = max_utils.cross_entropy_with_logits(logits, one_hot_targets, 0.0)
   xent = nn.with_logical_constraint(xent, ("activation_embed_and_logits_batch", "activation_length"))
   # Mask out paddings at the end of each example.
   xent = xent * (data["targets_segmentation"] != 0)
@@ -871,6 +897,9 @@ def train_loop(config, state=None):
       performance_metric_queue = queue.Queue()
       gcp_workload_monitor.start_performance_reporting_thread(performance_metric_queue)
 
+  if config.multi_languages:
+    language_sampling = interlaced_sampling(config.multi_languages, config.lang_ratios)
+
   for step in np.arange(start_step, config.steps):
     if step == first_profiling_step or prof.should_activate_periodic_profile(step):
       optional_postfix = f"step_{step}" if config.profile_periodically_period > 0 else ""
@@ -878,6 +907,10 @@ def train_loop(config, state=None):
 
     with jax.profiler.StepTraceAnnotation("train", step_num=step):
       record_goodput(recorder, config, recorder.record_data_loading_start_time if recorder else None)
+      if config.multi_languages:
+        language = language_sampling[step % len(language_sampling)]
+        lang_idx = config.multi_languages.index(language)
+        # TODO: Select embedding, and params after.
       example_batch = load_next_batch(data_iterator, example_batch, config)
       record_goodput(recorder, config, recorder.record_data_loading_end_time if recorder else None)
       check_example_batch(config, example_batch=example_batch)

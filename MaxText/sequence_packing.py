@@ -64,14 +64,21 @@ def pack_dataset(
   shapes = tf.nest.map_structure(lambda spec: spec.shape, dataset.element_spec)
   if keys is None:
     keys = list(shapes.keys())
+  key2dim = {}
   for k in keys:
     if k not in shapes:
       raise ValueError(
           f"""Key {k} not found in dataset.  Available keys are
                         {shapes.keys()}"""
       )
-    if not shapes[k].is_compatible_with(tf.TensorShape([None])):
-      raise ValueError("Tensors to be packed must be one-dimensional.")
+    if len(shapes[k]) == 1:
+      key2dim[k] = None
+    elif len(shapes[k]) == 2:
+      if shapes[k][1] is None:
+        raise ValueError(f"Second dimension must be fixed for 2D tensors. Key {k} has shape {shapes[k]}")
+      key2dim[k] = shapes[k][1]
+    else:
+      raise ValueError(f"Tensors must be 1D or 2D. Got rank {len(shapes[k])} for key {k}")
   # make sure that the length dictionary contains all keys as well as the
   # keys suffixed by "_segmentation" and "_position"
   if isinstance(key2length, int):
@@ -79,6 +86,7 @@ def pack_dataset(
   for k in keys:
     for suffix in ["_segmentation", "_position"]:
       key2length[k + suffix] = key2length[k]
+      key2dim[k + suffix] = None
 
   # trim to length
   dataset = dataset.map(lambda x: {k: x[k][: key2length[k]] for k in keys}, num_parallel_calls=AUTOTUNE)
@@ -87,29 +95,31 @@ def pack_dataset(
   batch_size = max(key2length.values())
   # We pad with a negative value instead of the default 0 because 0 is a
   # valid token for some tokenizers for e.g., representing unknown value
-  dataset = dataset.padded_batch(batch_size, padded_shapes={k: [-1] for k in keys}, padding_values=-1)
-  dataset = _pack_with_tf_ops(dataset, keys, key2length)
+  padded_shapes = {k: ([-1] if key2dim[k] is None else [-1, key2dim[k]]) for k in keys}
+  dataset = dataset.padded_batch(batch_size, padded_shapes=padded_shapes, padding_values=-1)
+  dataset = _pack_with_tf_ops(dataset, keys, key2length, key2dim)
 
   # Set the Tensor shapes correctly since they get lost in the process.
   def my_fn(x):
-    return {k: tf.reshape(v, [key2length[k]]) for k, v in x.items()}
+    return {k: tf.reshape(v, [key2length[k]]+([key2dim[k]] if key2dim[k] else [])) for k, v in x.items()}
 
   return dataset.map(my_fn, num_parallel_calls=AUTOTUNE)
 
 
-def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dict[str, int]) -> tf.data.Dataset:
+def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dict[str, int], key2dim: Dict[str, int]) -> tf.data.Dataset:
   """Helper-function for packing a dataset which has already been batched.
   Helper for pack_dataset()  Uses tf.while_loop.
   Args:
     dataset: a dataset containing padded batches of examples.
     keys: a list of strings
     key2length: an dict from feature-key to integer
+    key2dim: an dict from feature-key to integer
   Returns:
     a dataset.
   """
   empty_example = {}
   for k in keys:
-    empty_example[k] = tf.zeros([0], dtype=tf.int32)
+    empty_example[k] = tf.zeros([0] + ([key2dim[k]] if key2dim[k] else []), dtype=tf.int32)
     empty_example[k + "_position"] = tf.zeros([0], dtype=tf.int32)
   keys_etc = empty_example.keys()
 
@@ -117,7 +127,8 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
     new_partial = empty_example.copy()
     new_outputs = {}
     for k in keys_etc:
-      new_outputs[k] = outputs[k].write(outputs[k].size(), tf.pad(partial[k], [[0, key2length[k] - tf.size(partial[k])]]))
+      paddings = [[0, key2length[k] - tf.shape(partial[k])[0]]] + ([[0, 0]] if key2dim[k] else [])
+      new_outputs[k] = outputs[k].write(outputs[k].size(), tf.pad(partial[k], paddings))
     return new_partial, new_outputs
 
   def map_fn(x):
@@ -134,7 +145,8 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
     dynamic_batch_size = tf.shape(x[keys[0]])[0]
     outputs = {}
     for k in keys:
-      outputs[k] = tf.TensorArray(tf.int32, size=0, dynamic_size=True, element_shape=[key2length[k]])
+      element_shape = [key2length[k]] + ([key2dim[k]] if key2dim[k] else [])
+      outputs[k] = tf.TensorArray(tf.int32, size=0, dynamic_size=True, element_shape=element_shape)
       outputs[k + "_position"] = tf.TensorArray(tf.int32, size=0, dynamic_size=True, element_shape=[key2length[k]])
 
     def body_fn(i, partial, outputs):
@@ -151,10 +163,10 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
       for k in keys:
         val = tf.cast(x[k][i], tf.int32)
         # We consider only the valid tokens i.e., token_id != -1
-        val = val[: tf.reduce_sum(tf.cast(tf.not_equal(val, -1), tf.int32))]
+        val = val[: tf.reduce_sum(tf.cast(tf.not_equal(val[:, 0] if key2dim[k] else val, -1), tf.int32))]
         one_example[k] = val
       for k in keys:
-        can_append = tf.logical_and(can_append, tf.less_equal(tf.size(partial[k]) + tf.size(one_example[k]), key2length[k]))
+        can_append = tf.logical_and(can_append, tf.less_equal(tf.shape(partial[k])[0] + tf.shape(one_example[k])[0], key2length[k]))
 
       def false_fn():
         return write_packed_example(partial, outputs)
@@ -166,7 +178,7 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
       new_partial = {}
       for k in keys:
         new_seq = one_example[k][: key2length[k]]
-        new_seq_len = tf.size(new_seq)
+        new_seq_len = tf.shape(new_seq)[0]
         new_partial[k] = tf.concat([partial[k], new_seq], 0)
         new_partial[k + "_position"] = tf.concat([partial[k + "_position"], tf.range(new_seq_len)], 0)
       partial = new_partial
@@ -179,7 +191,7 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
         loop_vars=(i, partial, outputs),
         shape_invariants=(
             tf.TensorShape([]),
-            {k: tf.TensorShape([None]) for k in keys_etc},
+            {k: tf.TensorShape([None] + ([key2dim[k]] if key2dim[k] else [])) for k in keys_etc},
             {k: tf.TensorShape(None) for k in keys_etc},
         ),
         maximum_iterations=dynamic_batch_size,
@@ -188,9 +200,8 @@ def _pack_with_tf_ops(dataset: tf.data.Dataset, keys: List[str], key2length: Dic
     packed = {k: outputs[k].stack() for k in keys_etc}
     for k in keys:
       packed[k + "_segmentation"] = tf.cumsum(tf.cast(tf.equal(packed[k + "_position"], 0), tf.int32), axis=1) * tf.cast(
-          tf.not_equal(packed[k], 0), tf.int32
+          tf.not_equal(packed[k][..., 0] if key2dim[k] else packed[k], 0), tf.int32
       )
     return packed
-
   dataset = dataset.map(map_fn, num_parallel_calls=AUTOTUNE)
   return dataset.unbatch()

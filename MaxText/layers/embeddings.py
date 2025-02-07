@@ -14,6 +14,7 @@
 
 """Embedding Layers."""
 
+from functools import reduce
 from typing import Any, Optional
 
 from flax import linen as nn
@@ -46,6 +47,9 @@ class Embed(nn.Module):
   # pylint: disable=attribute-defined-outside-init
   config: Config
   num_embeddings: int
+  multi_tokenizer: bool
+  multi_languages: list[str]
+  multi_dims: list[int]
   features: int
   cast_input_dtype: Optional[DType] = None
   dtype: DType = jnp.float32
@@ -53,6 +57,20 @@ class Embed(nn.Module):
   embedding_init: Initializer = default_embed_init
 
   def setup(self):
+    if self.multi_tokenizer:
+      self.multi_embeds = tuple(self.param(
+        f'multi_embedding_{i}',
+        with_logical_partitioning(self.embedding_init, (f"multi_dim_{i}", "embed")),
+        (dim, self.features),
+        self.config.weight_dtype,
+      ) for i, dim in enumerate(self.multi_dims))
+    if len(self.multi_languages)>0:
+      self.embeddings = [self.param(
+          f"embedding_{i}",
+          with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
+          (self.num_embeddings, self.features),
+          self.config.weight_dtype,
+      ) for i in range(len(self.multi_languages))]
     self.embedding = self.param(
         "embedding",
         with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
@@ -80,6 +98,9 @@ class Embed(nn.Module):
       iota = lax.iota(jnp.int32, self.num_embeddings)
       one_hot = jnp.array(inputs[..., jnp.newaxis] == iota, dtype=self.dtype)
       output = jnp.dot(one_hot, jnp.asarray(self.embedding, self.dtype))
+    elif self.multi_tokenizer:
+      output = reduce(jnp.add, [jnp.asarray(emb, self.dtype)[inputs[..., i]]
+                  for i, emb in enumerate((self.embedding,) + self.multi_embeds)])
     else:
       output = jnp.asarray(self.embedding, self.dtype)[inputs]
     output = nn.with_logical_constraint(

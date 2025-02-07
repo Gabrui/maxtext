@@ -45,7 +45,7 @@ def get_tokenizer(tokenizer_path, add_bos, add_eos):
 
 
 def truncate_to_max_allowable_length(x, max_length):
-  return {k: v[:max_length] for k, v in x.items()}
+  return {k: tf.cast(v[:max_length], tf.int32) for k, v in x.items()}
 
 
 def shift_data_by_truncation(x):
@@ -274,12 +274,14 @@ def shift_and_refine(x, axis=1):
   """Shift inputs, set segmentation to 0 when target element is 0.
   Replace EOS by 0 for packed inputs."""
   x["inputs"] = shift_right(x["inputs"], axis=axis)
-  targets_nonzero = x["targets"] != 0
+  slices = (slice(None), slice(None)) + (0,) * (len(x["targets"].shape) - 2)
+  targets_nonzero = x["targets"][slices] != 0
   x["inputs_segmentation"] *= targets_nonzero
   x["targets_segmentation"] *= targets_nonzero
   # For packed targets, the first shifted token of a new sequence is made
   # 0, rather than being the EOS token for the last sequence.
-  x["inputs"] *= x["inputs_segmentation"] == shift_right(x["inputs_segmentation"], axis=axis)
+  slices = (slice(None), slice(None)) + (None,) * (len(x["targets"].shape) - 2)
+  x["inputs"] *= (x["inputs_segmentation"] == shift_right(x["inputs_segmentation"], axis=axis))[slices]
 
   return x
 

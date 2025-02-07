@@ -84,7 +84,7 @@ def preprocessing_pipeline(
     tokenize: bool = True,
     add_bos: bool = True,
     add_eos: bool = True,
-    num_epochs: Optional[int] = 1,
+    num_epochs: Optional[int] = None,
     pack_examples: bool = True,
     shuffle_buffer_size: int = 1024,
     shift: bool = True,

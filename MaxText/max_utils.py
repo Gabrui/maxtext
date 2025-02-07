@@ -659,9 +659,13 @@ def init_initial_state(model, tx, config, is_training, key):
   Args: model, tx, config, is_training, key
   """
   input_shape = (config.micro_batch_size_to_train_on, config.max_target_length)
+  if config.multi_tokenizer:
+    input_shape_ext = input_shape + (1+len(config.multi_dims),)
+  else:
+    input_shape_ext = input_shape
   model_vars = model.init(
       {"params": key, "dropout": key, "aqt": key},
-      np.ones(input_shape, dtype=jnp.int32),
+      np.ones(input_shape_ext, dtype=jnp.int32),
       np.ones(input_shape, dtype=jnp.int32),
   )
   if is_training:
