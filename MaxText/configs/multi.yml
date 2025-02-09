@@ -312,8 +312,8 @@ num_slices: -1
 
 # Tokenizer
 multi_tokenizer: True # True
-multi_languages: [] # ['arabic', 'azerbaijani', 'chinese', 'english', 'farsi', 'german', 'hebrew', 'hindi', 'korean', 'spanish', 'turkish', 'vietnamese']
-lang_ratios: [] #[1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]
+multi_languages:  ['arabic', 'azerbaijani', 'chinese', 'english', 'farsi', 'german', 'hebrew', 'hindi', 'korean', 'spanish', 'turkish', 'vietnamese']
+lang_ratios: [10, 10, 10, 10, 4, 6, 1, 2, 10, 10, 10, 10]
 multi_dims: [2, 3]
 vocab_size: 15_000 # powers of 2 for sharding
 tokenizer_path: ""
@@ -340,8 +340,8 @@ dpo_beta: 0.1
 dataset_type: tfds
 # for TFDS input pipeline (dataset_type=tfds)
 dataset_path: 'gs://multilingual-llm-tokenizer-tensorboard-logs-us-east1/'
-dataset_name: 'tokenized/english_multi:1.0.0'
-eval_dataset_name: 'tokenized/english_multi:1.0.0'
+dataset_name: 'tokenized/__LANGUAGE___multi:1.0.0'
+eval_dataset_name: 'tokenized/__LANGUAGE___multi:1.0.0'
 eval_split: 'valid'
 # for HuggingFace input pipeline (dataset_type=hf)
 hf_path: ''

@@ -490,6 +490,7 @@ class Transformer(nn.Module):
     )
 
     self.decoder = Decoder(config=cfg, shared_embedding=self.shared_embedding, mesh=mesh, quant=self.quant)
+    self.language = None
 
   def __call__(
       self,
@@ -515,3 +516,8 @@ class Transformer(nn.Module):
         model_mode=model_mode,
     )
     return logits
+  
+  def set_lang4train(self, language):
+    if language == self.language:
+      return
+    self.language = language

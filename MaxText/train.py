@@ -27,6 +27,7 @@ import functools
 import time
 import queue
 import heapq
+import itertools
 
 from typing import Sequence, Optional
 from absl import app
@@ -456,6 +457,10 @@ def loss_fn(model, config, data, dropout_rng, params, is_train=True):
     slices = [slice(a, b) for a, b in zip(slices[:-1], slices[1:])]
     xent = functools.reduce(jnp.add, [max_utils.cross_entropy_with_logits(logits[..., slice], one_hot_targets[i], 0.0)[0]
                   for i, slice in enumerate(slices)])
+    if config.multi_languages:
+      # TODO FIX
+      one_hot_language = jax.nn.one_hot(config.multi_languages.index(model.language), len(config.multi_languages))
+      xent = xent + max_utils.cross_entropy_with_logits(intermediate_outputs['language'], one_hot_language)
   else:
     one_hot_targets = jax.nn.one_hot(data["targets"], config.vocab_size)
     xent, _ = max_utils.cross_entropy_with_logits(logits, one_hot_targets, 0.0)
@@ -738,7 +743,15 @@ def setup_train_loop(config):
   init_rng, writer, checkpoint_manager, mesh, model, learning_rate_schedule, tx = setup_mesh_and_model(config)
   record_goodput(recorder, config, recorder.record_tpu_init_end_time if recorder else None)
   record_goodput(recorder, config, recorder.record_training_preparation_start_time if recorder else None)
-  data_iterator, eval_data_iterator = create_data_iterator(config, mesh)
+  if config.multi_languages:
+    data_iterator, eval_data_iterator = {}, {}
+    orig_dataset_name, orig_eval_dataset_name = config.dataset_name, config.eval_dataset_name
+    for language in config.multi_languages:
+      config.dataset_name = orig_dataset_name.replace('__LANGUAGE__', language)
+      config.eval_dataset_name = orig_eval_dataset_name.replace('__LANGUAGE__', language)
+      data_iterator[language], eval_data_iterator[language] = create_data_iterator(config, mesh)
+  else:
+    data_iterator, eval_data_iterator = create_data_iterator(config, mesh)
 
   state, _, state_mesh_shardings, data_iterator = max_utils.setup_training_state(
       model, data_iterator, tx, config, init_rng, mesh, checkpoint_manager
@@ -899,6 +912,10 @@ def train_loop(config, state=None):
 
   if config.multi_languages:
     language_sampling = interlaced_sampling(config.multi_languages, config.lang_ratios)
+    eval_iter = itertools.cycle(functools.reduce(
+      lambda x,y:x+y, [[l]*n for l, n in zip(config.multi_languages, config.lang_ratios)]))
+  else:
+    eval_iter = eval_data_iterator
 
   for step in np.arange(start_step, config.steps):
     if step == first_profiling_step or prof.should_activate_periodic_profile(step):
@@ -909,9 +926,10 @@ def train_loop(config, state=None):
       record_goodput(recorder, config, recorder.record_data_loading_start_time if recorder else None)
       if config.multi_languages:
         language = language_sampling[step % len(language_sampling)]
-        lang_idx = config.multi_languages.index(language)
-        # TODO: Select embedding, and params after.
-      example_batch = load_next_batch(data_iterator, example_batch, config)
+        example_batch = load_next_batch(data_iterator[language], example_batch, config)
+        model.set_lang4train(language)
+      else:
+        example_batch = load_next_batch(data_iterator, example_batch, config)
       record_goodput(recorder, config, recorder.record_data_loading_end_time if recorder else None)
       check_example_batch(config, example_batch=example_batch)
       # pylint: disable=not-callable
@@ -961,10 +979,13 @@ def train_loop(config, state=None):
       eval_dpo_reward_accuracy = 0.0
       eval_step_count = 0
       # pylint: disable=not-callable
-      for eval_batch in eval_data_iterator:
+      for eval_batch in eval_iter:
         if config.eval_steps > 0 and eval_step_count >= config.eval_steps:
           break
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
+          if config.multi_languages:
+            language, eval_batch = eval_batch, next(eval_data_iterator[eval_batch])
+            model.set_lang4train(language)
           eval_metrics = p_eval_step(state, eval_batch, nextrng)
         cumulative_eval_metrics["scalar"]["eval/total_loss"] += float(eval_metrics["scalar"]["evaluation/total_loss"])
         cumulative_eval_metrics["scalar"]["eval/total_weights"] += float(eval_metrics["scalar"]["evaluation/total_weights"])
