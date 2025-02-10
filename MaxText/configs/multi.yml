@@ -315,6 +315,7 @@ multi_tokenizer: True # True
 multi_languages:  ['arabic', 'azerbaijani', 'chinese', 'english', 'farsi', 'german', 'hebrew', 'hindi', 'korean', 'spanish', 'turkish', 'vietnamese']
 lang_ratios: [10, 10, 10, 10, 4, 6, 1, 2, 10, 10, 10, 10]
 multi_dims: [2, 3]
+num_lang_blocks: [1, 1]
 vocab_size: 15_000 # powers of 2 for sharding
 tokenizer_path: ""
 tokenize_train_data: False  # False if the dataset is pre-tokenized
