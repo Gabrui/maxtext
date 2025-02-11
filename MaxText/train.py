@@ -927,7 +927,7 @@ def train_loop(config, state=None):
       if config.multi_languages:
         language = language_sampling[step % len(language_sampling)]
         example_batch = load_next_batch(data_iterator[language], example_batch, config)
-        model.set_lang4train(language)
+        state = model.set_lang4train(language, state)
       else:
         example_batch = load_next_batch(data_iterator, example_batch, config)
       record_goodput(recorder, config, recorder.record_data_loading_end_time if recorder else None)
@@ -985,7 +985,7 @@ def train_loop(config, state=None):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
           if config.multi_languages:
             language, eval_batch = eval_batch, next(eval_data_iterator[eval_batch])
-            model.set_lang4train(language)
+            state = model.set_lang4train(language, state)
           eval_metrics = p_eval_step(state, eval_batch, nextrng)
         cumulative_eval_metrics["scalar"]["eval/total_loss"] += float(eval_metrics["scalar"]["evaluation/total_loss"])
         cumulative_eval_metrics["scalar"]["eval/total_weights"] += float(eval_metrics["scalar"]["evaluation/total_weights"])

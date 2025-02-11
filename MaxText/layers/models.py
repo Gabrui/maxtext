@@ -471,9 +471,6 @@ class Decoder(nn.Module):
       logits = logits.astype(jnp.float32)
     return logits
 
-  def set_lang4train(self, language):
-    pass
-
 
 class Transformer(nn.Module):
   """An decoder-only Transformer model."""
@@ -530,8 +527,9 @@ class Transformer(nn.Module):
     )
     return logits
   
-  def set_lang4train(self, language):
+  def set_lang4train(self, language, state):
     if language == self.language:
-      return
+      return state
     self.language = language
+    self.shared_embedding.set_lang4train(language)
     self.decoder.set_lang4train(language)

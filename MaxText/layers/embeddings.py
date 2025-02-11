@@ -65,12 +65,12 @@ class Embed(nn.Module):
         self.config.weight_dtype,
       ) for i, dim in enumerate(self.multi_dims))
     if len(self.multi_languages)>0:
-      self.embeddings = [self.param(
-          f"embedding_{i}",
+      self.embeddings = tuple(self.param(
+          f"embedding_{language}",
           with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
           (self.num_embeddings, self.features),
           self.config.weight_dtype,
-      ) for i in range(len(self.multi_languages))]
+      ) for language in self.multi_languages)
     self.embedding = self.param(
         "embedding",
         with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
@@ -123,6 +123,9 @@ class Embed(nn.Module):
     """
     dtype = self.attend_dtype if self.attend_dtype is not None else self.dtype
     return jnp.dot(query, jnp.asarray(self.embedding, jnp.bfloat16).T)
+
+  def set_lang4train(self, language):
+    pass
 
 
 class RotaryEmbedding(nn.Module):
