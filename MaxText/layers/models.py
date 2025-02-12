@@ -531,5 +531,4 @@ class Transformer(nn.Module):
     if language == self.language:
       return state
     self.language = language
-    self.shared_embedding.set_lang4train(language)
-    self.decoder.set_lang4train(language)
+    

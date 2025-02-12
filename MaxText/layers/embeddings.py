@@ -124,9 +124,6 @@ class Embed(nn.Module):
     dtype = self.attend_dtype if self.attend_dtype is not None else self.dtype
     return jnp.dot(query, jnp.asarray(self.embedding, jnp.bfloat16).T)
 
-  def set_lang4train(self, language):
-    pass
-
 
 class RotaryEmbedding(nn.Module):
   """Rotary Position Embedding.
