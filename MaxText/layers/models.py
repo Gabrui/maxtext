@@ -189,16 +189,6 @@ class Decoder(nn.Module):
           config=self.config, mesh=self.mesh, layers=pipeline_stage_module, remat_policy=remat_policy
       )
 
-    if self.config.multi_languages:
-      self.language_decoders = []
-      for language in self.config.multi_languages:
-        for is_end, qtd_blocks in enumerate(self.config.num_lang_blocks):
-          for i in range(qtd_blocks):
-            name = f"layers_{self.config.num_decoder_layers-1-i if is_end else i}_{language}"
-            self.language_decoders.append(
-              self.decoder_layer(config=self.config, mesh=self.mesh, name=name, quant=self.quant))
-        self.language_decoders = tuple(self.language_decoders)
-
   def get_remat_policy(self):
     cfg = self.config
     if cfg.remat_policy != "none":
@@ -531,4 +521,5 @@ class Transformer(nn.Module):
     if language == self.language:
       return state
     self.language = language
-    
+    # Save current language states
+    # TODO return new state dict pytree

@@ -64,13 +64,6 @@ class Embed(nn.Module):
         (dim, self.features),
         self.config.weight_dtype,
       ) for i, dim in enumerate(self.multi_dims))
-    if len(self.multi_languages)>0:
-      self.embeddings = tuple(self.param(
-          f"embedding_{language}",
-          with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
-          (self.num_embeddings, self.features),
-          self.config.weight_dtype,
-      ) for language in self.multi_languages)
     self.embedding = self.param(
         "embedding",
         with_logical_partitioning(self.embedding_init, ("vocab", "embed")),
