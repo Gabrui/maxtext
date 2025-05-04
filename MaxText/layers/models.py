@@ -312,7 +312,7 @@ class Decoder(nn.Module):
     else:
       raise ValueError(f"Incorrect decoder_block name {self.config.decoder_block=}")
 
-  def scan_decoder_layers(self, cfg, decoder_layer, length, metdata_axis_name, mesh):
+  def scan_decoder_layers(self, cfg, decoder_layer, length, metdata_axis_name, mesh, name="layers"):
     initializing = self.is_mutable_collection("params")
     params_spec = cfg.param_scan_axis if initializing else ScanIn(cfg.param_scan_axis)
     cache_spec = 0
@@ -338,7 +338,7 @@ class Decoder(nn.Module):
         length=length,
         metadata_params={nn.PARTITION_NAME: metdata_axis_name},
     )
-    return scan_fn(config=cfg, mesh=mesh, name="layers", quant=self.quant)
+    return scan_fn(config=cfg, mesh=mesh, name=name, quant=self.quant)
 
   def get_pipeline_stage_module(self, base_stage):
     cfg = self.config
@@ -406,7 +406,39 @@ class Decoder(nn.Module):
           y, decoder_segment_ids, decoder_positions, deterministic, model_mode, partition_spec=partition_spec
       )
     else:
-      if cfg.scan_layers:
+      if cfg.scan_layers and (len(cfg.multi_languages)>0 or cfg.num_lang_blocks[1]>0):
+        y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_lang_blocks[0], "initial_layers_lang", mesh, "initial_layers_lang")(
+            y,
+            decoder_segment_ids,
+            decoder_positions,
+            deterministic,
+            model_mode,
+        )
+        y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers-cfg.num_lang_blocks[0]-cfg.num_lang_blocks[1], "layers", mesh)(
+            y,
+            decoder_segment_ids,
+            decoder_positions,
+            deterministic,
+            model_mode,
+        )
+        self.sow("intermediates", "language", linears.DenseGeneral(
+              len(cfg.multi_languages),
+              weight_dtype=cfg.weight_dtype,
+              dtype=jnp.float32 if cfg.logits_dot_in_fp32 else cfg.dtype,  # for logit training stability
+              kernel_axes=("embed", "lang"),
+              name="lang_logits_dense",
+              matmul_precision=self.config.matmul_precision,
+          )(
+              y
+        ))
+        y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_lang_blocks[1], "final_layers_lang", mesh, "final_layers_lang")(
+            y,
+            decoder_segment_ids,
+            decoder_positions,
+            deterministic,
+            model_mode,
+        )
+      elif cfg.scan_layers:
         y, _ = self.scan_decoder_layers(cfg, RemattedBlockLayer, cfg.num_decoder_layers, "layers", mesh)(
             y,
             decoder_segment_ids,
@@ -479,7 +511,6 @@ class Transformer(nn.Module):
     self.shared_embedding = Embed(
         num_embeddings=cfg.vocab_size,
         multi_tokenizer=cfg.multi_tokenizer,
-        multi_languages=cfg.multi_languages,
         multi_dims=cfg.multi_dims,
         features=cfg.emb_dim,
         dtype=cfg.dtype,
@@ -490,7 +521,6 @@ class Transformer(nn.Module):
     )
 
     self.decoder = Decoder(config=cfg, shared_embedding=self.shared_embedding, mesh=mesh, quant=self.quant)
-    self.language = None
 
   def __call__(
       self,
@@ -516,10 +546,3 @@ class Transformer(nn.Module):
         model_mode=model_mode,
     )
     return logits
-  
-  def set_lang4train(self, language, state):
-    if language == self.language:
-      return state
-    self.language = language
-    # Save current language states
-    # TODO return new state dict pytree

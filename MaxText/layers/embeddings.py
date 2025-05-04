@@ -48,7 +48,6 @@ class Embed(nn.Module):
   config: Config
   num_embeddings: int
   multi_tokenizer: bool
-  multi_languages: list[str]
   multi_dims: list[int]
   features: int
   cast_input_dtype: Optional[DType] = None

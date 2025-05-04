@@ -718,6 +718,25 @@ def setup_training_state(model, data_iterator, tx, config, rng, mesh, checkpoint
   )
 
 
+def _deep_copy(tensor_dict):
+  if type(tensor_dict) == dict:
+    return {k: _deep_copy(v) for k, v in tensor_dict.items()}
+  elif type(tensor_dict) == jax.ShapeDtypeStruct:
+    return tensor_dict
+  return flax.linen.spmd.LogicallyPartitioned(jnp.array(tensor_dict.value), tensor_dict.get_partition_spec())
+  
+
+def _copy_params(params_dict, params_path={'params': {'token_embedder': ['embedding'],
+              'decoder': ['decoder_norm', 'logits_dense', 'initial_layers_lang', 'final_layers_lang']}}):
+  new_dic = {}
+  for k, v in params_path.items():
+    if type(v) == dict:
+      new_dic[k] = _copy_params(params_dict[k], v)
+    elif type(v) == list:
+      new_dic[k] = {k2: _deep_copy(params_dict[k][k2]) for k2 in v if params_dict[k].get(k2) is not None}
+  return new_dic
+
+
 def setup_initial_state(
     model,
     data_iterator,
@@ -751,6 +770,13 @@ def setup_initial_state(
 
   # Initialization
   with nn_partitioning.axis_rules(config.logical_axis_rules):
+    if config.multi_languages:
+      unboxed_abstract_state = unboxed_abstract_state.replace(params=dict(unboxed_abstract_state.params,
+              lang_params={lang: _copy_params(unboxed_abstract_state.params) for lang in config.multi_languages}),
+        opt_state=(unboxed_abstract_state.opt_state[0]._replace(**{k: dict(getattr(unboxed_abstract_state.opt_state[0], k), lang_params={
+          lang: _copy_params(getattr(unboxed_abstract_state.opt_state[0], k)) for lang in config.multi_languages}) for k in ['mu', 'nu']}),
+           *unboxed_abstract_state.opt_state[1:]))
+
     restored, raw_params = checkpointing.load_state_if_possible(
         checkpoint_manager,
         data_iterator,
@@ -777,6 +803,10 @@ def setup_initial_state(
           in_shardings=None,
           out_shardings=state_mesh_shardings,
       )(rng)
+      if config.multi_languages:
+        state = state.replace(params=dict(state.params, lang_params={lang: _copy_params(state.params) for lang in config.multi_languages}),
+                              opt_state=(state.opt_state[0]._replace(**{k: dict(getattr(state.opt_state[0], k), lang_params={
+                                lang: _copy_params(getattr(state.opt_state[0], k)) for lang in config.multi_languages}) for k in ['mu', 'nu']}), *state.opt_state[1:]))
       if raw_params:  # If we loaded a partial state, we need to merge it.
         state = state.replace(params=raw_params)
 

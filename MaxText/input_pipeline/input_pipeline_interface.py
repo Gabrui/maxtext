@@ -52,6 +52,9 @@ class SyntheticDataIterator:
     sequence_positions = jnp.arange(0, config.max_target_length + 1, dtype=jnp.int32).reshape(1, -1)
     batch_positions = jnp.broadcast_to(sequence_positions, (config.global_batch_size_to_load, config.max_target_length + 1))
     segmentation = jnp.ones((config.global_batch_size_to_load, config.max_target_length), dtype=jnp.int32)
+    if config.multi_tokenizer:
+      dims = config.multi_dims + ([len(config.multi_languages)] if config.multi_languages else [])
+      tokens = jnp.dstack([tokens]+[jax.random.randint(jax.random.PRNGKey(i), tokens.shape, 0, dim, jnp.int32) for i, dim in enumerate(dims)])
     self.data = (tokens, batch_positions, segmentation)
 
   def __iter__(self):
@@ -146,7 +149,7 @@ def make_mixed_iterator(config, mesh, process_indices_train, process_indices_eva
   return train_iterator, eval_iterator
 
 
-def create_data_iterator(config, mesh):
+def create_data_iterator(config, mesh, language=None):
   if config.dataset_type == "synthetic":
     return SyntheticDataIterator(config, mesh), None
 
@@ -173,8 +176,8 @@ def create_data_iterator(config, mesh):
     if config.eval_interval > 0:
       assert len(process_indices_eval) == jax.process_count() // config.expansion_factor_real_data
   if config.dataset_type == "tfds":
-    train_iterator_fn = functools.partial(make_tfds_train_iterator, config, mesh, process_indices_train)
-    eval_iterator_fn = functools.partial(make_tfds_eval_iterator, config, mesh, process_indices_eval)
+    train_iterator_fn = functools.partial(make_tfds_train_iterator, config, mesh, process_indices_train, language)
+    eval_iterator_fn = functools.partial(make_tfds_eval_iterator, config, mesh, process_indices_eval, language)
   elif config.dataset_type == "grain":
     train_iterator_fn = functools.partial(make_grain_train_iterator, config, mesh, process_indices_train)
     eval_iterator_fn = functools.partial(make_grain_eval_iterator, config, mesh, process_indices_eval)

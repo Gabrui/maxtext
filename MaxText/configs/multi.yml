@@ -14,7 +14,7 @@
 
 # This sentinel is a reminder to choose a real run name.
 # If there is already a checkpoint under this run, that checkpoint will auto-resume.
-run_name: ""
+run_name: "local"
 
 model_name: "default" # override config settings to match a specific model. other than the override, nothing should use this!
 normalization_layer_epsilon: 1.e-05
@@ -40,7 +40,7 @@ load_full_state_path: ""
 # problems with the checkpointer we recommend trying the synchronous one.
 enable_checkpointing: True
 async_checkpointing: True
-checkpoint_period: 200
+checkpoint_period: 90
 # enables one replica to read the ckpt then broadcast to the rest
 enable_single_replica_ckpt_restoring: False
 
@@ -209,7 +209,7 @@ record_internal_nn_metrics: 0
 
 # Output directory
 # Create a GCS bucket, e.g. my-maxtext-outputs and set this to "gs://my-maxtext-outputs/"
-base_output_directory: "gs://multilingual-llm-tokenizer-tensorboard-logs-us-east1/"
+base_output_directory: "gs://multilingual-llm-tokenizer-tensorboard-logs-us-central1/"
 
 # Whether or not to enable emergency checkpoint. If True, `local_checkpoint_directory` and a non-zero `local_checkpoint_period` must also be specified.
 # Emergency checkpoint is an experimental Orbax feature that: periodically saves to persistent storage and, with a larger invertal, saves to a local directory.
@@ -296,8 +296,8 @@ dcn_tensor_sequence_parallelism: 1 # never recommended
 dcn_pipeline_parallelism: 1
 dcn_expert_parallelism: 1
 dcn_autoregressive_parallelism: 1 # never recommended
-ici_data_parallelism: 1
-ici_fsdp_parallelism: -1 # recommended ICI axis to be auto-sharded
+ici_data_parallelism: -1
+ici_fsdp_parallelism: 1 # recommended ICI axis to be auto-sharded
 ici_fsdp_transpose_parallelism: 1
 ici_sequence_parallelism: 1
 ici_tensor_parallelism: 1
@@ -313,7 +313,7 @@ num_slices: -1
 # Tokenizer
 multi_tokenizer: True # True
 multi_languages:  ['arabic', 'azerbaijani', 'chinese', 'english', 'farsi', 'german', 'hebrew', 'hindi', 'korean', 'spanish', 'turkish', 'vietnamese']
-lang_ratios: [10, 10, 10, 10, 4, 6, 1, 2, 10, 10, 10, 10]
+lang_ratios: [10, 10, 10, 10, 3, 4, 1, 2, 10, 10, 10, 10]
 multi_dims: [2, 3]
 num_lang_blocks: [1, 1]
 vocab_size: 15_000 # powers of 2 for sharding
@@ -340,7 +340,7 @@ dpo_beta: 0.1
 # details in: https://github.com/google/maxtext/blob/main/getting_started/Data_Input_Pipeline.md
 dataset_type: tfds
 # for TFDS input pipeline (dataset_type=tfds)
-dataset_path: 'gs://multilingual-llm-tokenizer-tensorboard-logs-us-east1/'
+dataset_path: 'gs://multilingual-llm-tokenizer-tensorboard-logs-us-central1/'
 dataset_name: 'tokenized/__LANGUAGE___multi:1.0.0'
 eval_dataset_name: 'tokenized/__LANGUAGE___multi:1.0.0'
 eval_split: 'valid'
@@ -357,7 +357,7 @@ grain_eval_files: ''
 grain_worker_count: 1
 
 # Training loop
-steps: 4_000 # If set to -1 then will inherit value from learning_rate_schedule_steps
+steps: 40_000 # If set to -1 then will inherit value from learning_rate_schedule_steps
 log_period: 30 # Flushes Tensorboard
 
 jax_distributed_initialization_timeout: 300 # This is the default timeout in https://github.com/jax-ml/jax/blob/main/jax/_src/distributed.py
@@ -463,8 +463,8 @@ decode_sampling_nucleus_p: -1 # set if you're doing nucleus / top-p
 decode_sampling_top_k: 0 # set if you're doing top-k
 decode_sampling_temperature: 1.
 
-eval_interval: 200  # the specific number of train step between eval_step
-eval_steps: 4  # only run this number of batches for eval, for debugging use
+eval_interval: 90  # the specific number of train step between eval_step
+eval_steps: 12  # only run this number of batches for eval, for debugging use
 target_eval_loss: 0.  # early stop once reaching target eval_loss
 
 # Goodput parameters
@@ -486,7 +486,7 @@ use_vertex_tensorboard: True
 vertex_tensorboard_project: ""
 # Region to create Vertex AI Tensorboard in for GCE, blank if running via XPK
 # Vertex AI supported regions: https://cloud.google.com/vertex-ai/docs/general/locations#available-regions
-vertex_tensorboard_region: "us-east1"
+vertex_tensorboard_region: "us-central1"
 
 # If set to True, MaxText will perform extra checks using jax.checkify. Note that this will effect performance.
 max_checkify: False

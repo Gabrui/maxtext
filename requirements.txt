@@ -19,6 +19,7 @@ ml-collections
 ml-goodput-measurement==0.0.4
 numpy
 optax
+orbax-checkpoint==0.11.0
 protobuf==3.20.3
 pylint
 pytest

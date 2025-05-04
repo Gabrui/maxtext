@@ -33,6 +33,7 @@ from typing import Sequence, Optional
 from absl import app
 from flax import linen as nn
 from flax.linen import partitioning as nn_partitioning
+from flax.core import freeze, unfreeze
 import grain.python as grain
 import jax
 import numpy as np
@@ -94,6 +95,59 @@ def interlaced_sampling(languages, frequencies):
         for item in temp:
             heapq.heappush(max_heap, item)
     return result
+
+
+def _extract_params(params_dict, params_path={'params': {'token_embedder': ['embedding'],
+              'decoder': ['decoder_norm', 'logits_dense', 'initial_layers_lang', 'final_layers_lang']}}):
+  new_dic = {}
+  for k, v in params_path.items():
+    if type(v) == dict:
+      new_dic[k] = _extract_params(params_dict[k], v)
+    elif type(v) == list:
+      new_dic[k] = {k2: params_dict[k][k2] for k2 in v if params_dict[k].get(k2) is not None}
+  return new_dic
+
+
+def _smart_update(base, update, params_path={'params': {'token_embedder': ['embedding'],
+              'decoder': ['decoder_norm', 'logits_dense', 'initial_layers_lang', 'final_layers_lang']}}):
+  for k, v in params_path.items():
+    if type(v) == dict:
+      _smart_update(base[k], update[k], v)
+    elif type(v) == list:
+      base[k].update({k2: update[k][k2] for k2 in v if update[k].get(k2) is not None})
+  return base
+
+
+def _update_lang_state(state, lang_state, last_lang):
+  lang_state[0][last_lang] = _extract_params(state.params)
+  for k, v in lang_state[1].items():
+    v[last_lang] = _extract_params(getattr(state.opt_state[0], k))
+
+
+def set_lang4train(language, state, lang_state, last_lang):
+  if last_lang:
+    if language == last_lang:
+      return state, language
+    _update_lang_state(state, lang_state, last_lang)
+  new_state = state.replace(params=_smart_update(unfreeze(state.params), lang_state[0][language]),
+                      opt_state=(state.opt_state[0]._replace(**{hp: _smart_update(unfreeze(getattr(state.opt_state[0], hp)),
+                                            lang_state[1][hp][language]) for hp in ['mu', 'nu']}), *state.opt_state[1:]))
+  return new_state, language
+
+
+def split_lang_state(state):
+  lang_state = (unfreeze(state.params["lang_params"]), {k: unfreeze(getattr(state.opt_state[0], k)["lang_params"]) for k in ['mu', 'nu']})
+  new_state = state.replace(params={k: v for k, v in state.params.items() if k != "lang_params"},
+                      opt_state=(state.opt_state[0]._replace(**{hp: {k: v for k, v in getattr(state.opt_state[0], hp).items() if k != "lang_params"}
+                                                                for hp in ['mu', 'nu']}), *state.opt_state[1:]))
+  return new_state, lang_state
+
+
+def merge_lang_state(state, lang_state, last_lang):
+  if last_lang:
+    _update_lang_state(state, lang_state, last_lang)
+  return state.replace(params=dict(state.params, lang_params=lang_state[0]), opt_state=(state.opt_state[0]._replace(**{
+    k: dict(getattr(state.opt_state[0], k), lang_params=lang_state[1][k]) for k in ['mu', 'nu']}), *state.opt_state[1:]))
 
 
 def validate_train_config(config):
@@ -458,9 +512,9 @@ def loss_fn(model, config, data, dropout_rng, params, is_train=True):
     xent = functools.reduce(jnp.add, [max_utils.cross_entropy_with_logits(logits[..., slice], one_hot_targets[i], 0.0)[0]
                   for i, slice in enumerate(slices)])
     if config.multi_languages:
-      # TODO FIX
-      one_hot_language = jax.nn.one_hot(config.multi_languages.index(model.language), len(config.multi_languages))
-      xent = xent + max_utils.cross_entropy_with_logits(intermediate_outputs['language'], one_hot_language)
+      one_hot_language = jax.nn.one_hot(data["targets"][..., -1], len(config.multi_languages))
+      lang_logits = intermediate_outputs["intermediates"]['decoder']['language'][-1]
+      xent = xent + max_utils.cross_entropy_with_logits(lang_logits, one_hot_language, 0.0)[0]
   else:
     one_hot_targets = jax.nn.one_hot(data["targets"], config.vocab_size)
     xent, _ = max_utils.cross_entropy_with_logits(logits, one_hot_targets, 0.0)
@@ -747,9 +801,7 @@ def setup_train_loop(config):
     data_iterator, eval_data_iterator = {}, {}
     orig_dataset_name, orig_eval_dataset_name = config.dataset_name, config.eval_dataset_name
     for language in config.multi_languages:
-      config.dataset_name = orig_dataset_name.replace('__LANGUAGE__', language)
-      config.eval_dataset_name = orig_eval_dataset_name.replace('__LANGUAGE__', language)
-      data_iterator[language], eval_data_iterator[language] = create_data_iterator(config, mesh)
+      data_iterator[language], eval_data_iterator[language] = create_data_iterator(config, mesh, language)
   else:
     data_iterator, eval_data_iterator = create_data_iterator(config, mesh)
 
@@ -830,6 +882,8 @@ def train_loop(config, state=None):
       reference_params = jax.tree.map(jnp.copy, state.params["params"])
       state = _merge_dpo_state(state, reference_params)
     state_mesh_shardings = _merge_dpo_state(state_mesh_shardings, state_mesh_shardings.params["params"])
+  if config.multi_languages:
+    state, lang_state = split_lang_state(state)
 
   # pylint: disable=line-too-long
   (
@@ -912,8 +966,10 @@ def train_loop(config, state=None):
 
   if config.multi_languages:
     language_sampling = interlaced_sampling(config.multi_languages, config.lang_ratios)
-    eval_iter = itertools.cycle(functools.reduce(
-      lambda x,y:x+y, [[l]*n for l, n in zip(config.multi_languages, config.lang_ratios)]))
+    # eval_iter = itertools.cycle(functools.reduce(
+    #   lambda x,y:x+y, [[l]*n for l, n in zip(config.multi_languages, config.lang_ratios)]))
+    eval_iter = itertools.cycle(config.multi_languages)
+    language, last_lang = '', ''
   else:
     eval_iter = eval_data_iterator
 
@@ -927,7 +983,7 @@ def train_loop(config, state=None):
       if config.multi_languages:
         language = language_sampling[step % len(language_sampling)]
         example_batch = load_next_batch(data_iterator[language], example_batch, config)
-        state = model.set_lang4train(language, state)
+        state, last_lang = set_lang4train(language, state, lang_state, last_lang)
       else:
         example_batch = load_next_batch(data_iterator, example_batch, config)
       record_goodput(recorder, config, recorder.record_data_loading_end_time if recorder else None)
@@ -946,6 +1002,8 @@ def train_loop(config, state=None):
 
     if checkpoint_manager is not None:
       state_to_save = state if not config.use_dpo else _split_dpo_state(state)[0]
+      if config.multi_languages:
+        state_to_save = merge_lang_state(state, lang_state, last_lang)
       if save_checkpoint(checkpoint_manager, int(step), state_to_save, config.dataset_type, data_iterator, config):
         checkpointing.print_save_message(step, config.async_checkpointing)
 
@@ -985,7 +1043,7 @@ def train_loop(config, state=None):
         with mesh, nn_partitioning.axis_rules(config.logical_axis_rules):
           if config.multi_languages:
             language, eval_batch = eval_batch, next(eval_data_iterator[eval_batch])
-            state = model.set_lang4train(language, state)
+            state, last_lang = set_lang4train(language, state, lang_state, last_lang)
           eval_metrics = p_eval_step(state, eval_batch, nextrng)
         cumulative_eval_metrics["scalar"]["eval/total_loss"] += float(eval_metrics["scalar"]["evaluation/total_loss"])
         cumulative_eval_metrics["scalar"]["eval/total_weights"] += float(eval_metrics["scalar"]["evaluation/total_weights"])

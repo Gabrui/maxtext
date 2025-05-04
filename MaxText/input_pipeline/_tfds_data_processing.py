@@ -91,6 +91,7 @@ def preprocessing_pipeline(
     drop_remainder: bool = True,
     prefetch_size=tf.data.experimental.AUTOTUNE,
     use_dpo: bool = False,
+    lang: Optional[int] = None,
 ):
   """pipeline for preprocessing TFDS dataset."""
   if not use_dpo:
@@ -149,6 +150,10 @@ def preprocessing_pipeline(
         num_parallel_calls=tf.data.AUTOTUNE,
         deterministic=True,
     )
+  if lang is not None:
+    dataset = dataset.map(
+        lambda x: {**x, 'targets': tf.pad(x['targets'], [[0, 0], [0, 0], [0, 1]], constant_values=lang)},
+        num_parallel_calls=tf.data.AUTOTUNE)
 
   if prefetch_size:
     dataset = dataset.prefetch(prefetch_size)
@@ -163,10 +168,11 @@ def make_tfds_train_iterator(
     config: ml_collections.ConfigDict,
     global_mesh,
     process_indices_train,
+    lang=None,
 ):
   """load dataset, preprocess and return iterators"""
   train_ds = get_datasets(
-      dataset_name=config.dataset_name,
+      dataset_name=config.dataset_name if lang is None else config.dataset_name.replace('__LANGUAGE__', lang),
       data_split="train",
       shuffle_files=config.enable_data_shuffling,
       shuffle_seed=config.data_shuffle_seed,
@@ -186,6 +192,7 @@ def make_tfds_train_iterator(
       add_bos=config.add_bos,
       add_eos=config.add_eos,
       use_dpo=config.use_dpo,
+      lang=config.multi_languages.index(lang) if lang else None,
   )
   return train_iter
 
@@ -194,9 +201,10 @@ def make_tfds_eval_iterator(
     config: ml_collections.ConfigDict,
     global_mesh,
     process_indices_eval,
+    lang=None,
 ):
   eval_ds = get_datasets(
-      dataset_name=config.eval_dataset_name,
+      dataset_name=config.eval_dataset_name if lang is None else config.eval_dataset_name.replace('__LANGUAGE__', lang),
       data_split=config.eval_split,
       shuffle_files=False,
       shuffle_seed=config.data_shuffle_seed,
@@ -217,6 +225,7 @@ def make_tfds_eval_iterator(
       add_bos=config.add_bos,
       add_eos=config.add_eos,
       use_dpo=config.use_dpo,
+      lang=config.multi_languages.index(lang) if lang else None,
   )
 
   return eval_iter
