@@ -1,0 +1,3 @@
+[submodule "tokend"]
+	path = tokend
+	url = https://github.com/Gabrui/multidim-tokenizers-data
